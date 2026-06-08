@@ -2,11 +2,12 @@ from flask import Flask, request
 import requests
 import uuid
 import json
-from config import TOKEN
+import os
 
 app = Flask(__name__)
 
-BASE_URL = f"https://tapi.bale.ai/bot934745261:DtDGTB3MeeTg2V8-jfUbzr5O2KcQGQi6WXQ"
+TOKEN = "934745261:DtDGTB3MeeTg2V8-jfUbzr5O2KcQGQi6WXQ"
+BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 
 games = {}
 user_game = {}
@@ -53,31 +54,26 @@ def winner(m1, m2):
 # ---------------- WEBHOOK ----------------
 @app.route("/", methods=["POST"])
 def webhook():
+
     data = request.get_json(force=True)
 
-    print("UPDATE:", data)
-
-    if not data:
-        return "ok"
-
-    if "message" in data:
-        msg = data["message"]
-        text = msg.get("text", "")
-        chat_id = msg["chat"]["id"]
-
-        if text == "/start":
-            send(chat_id, "🎮 ربات فعال شد!")
-
-    return "ok"
+    print("=== UPDATE RECEIVED ===")
+    print(data)
 
     # ---------------- MESSAGE ----------------
     if "message" in data:
         msg = data["message"]
-        text = msg.get("text", "")
+
+        text = msg.get("text")
         chat_id = msg["chat"]["id"]
 
+        if not text:
+            return "ok"
+
+        text = text.strip()
+
         # START
-        if text == "/start":
+        if text.startswith("/start"):
             send(chat_id, "🎮 خوش اومدی!\n/create برای ساخت بازی")
 
         # CREATE GAME
@@ -87,8 +83,7 @@ def webhook():
             games[game_id] = {
                 "p1": chat_id,
                 "p2": None,
-                "moves": {},
-                "state": "waiting"
+                "moves": {}
             }
 
             user_game[chat_id] = game_id
@@ -112,17 +107,16 @@ def webhook():
             game = games[game_id]
 
             game["p2"] = chat_id
-            game["state"] = "playing"
-
             user_game[chat_id] = game_id
             user_game[game["p1"]] = game_id
 
-            send(game["p1"], "🎮 حریف وصل شد! شروع بازی", choice_buttons())
+            send(game["p1"], "🎮 حریف وصل شد!", choice_buttons())
             send(game["p2"], "🎮 شروع بازی!", choice_buttons())
 
     # ---------------- CALLBACK ----------------
     if "callback_query" in data:
         cq = data["callback_query"]
+
         chat_id = cq["message"]["chat"]["id"]
         move = cq["data"]
 
@@ -131,7 +125,10 @@ def webhook():
             return "ok"
 
         game_id = user_game[chat_id]
-        game = games[game_id]
+        game = games.get(game_id)
+
+        if not game:
+            return "ok"
 
         if chat_id == game["p1"]:
             game["moves"]["p1"] = move
@@ -146,13 +143,10 @@ def webhook():
             send(game["p1"], result)
             send(game["p2"], result)
 
-            game["state"] = "finished"
-
     return "ok"
 
 
-import os
-
+# ---------------- RUN (RENDER FIXED PORT) ----------------
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
