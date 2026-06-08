@@ -44,6 +44,8 @@ queue = deque()
 active_games = {}
 
 # ================= SEND =================
+
+
 def send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text}
     if reply_markup:
@@ -51,6 +53,8 @@ def send(chat_id, text, reply_markup=None):
     requests.post(BASE_URL + "/sendMessage", data=data)
 
 # ================= UI =================
+
+
 def menu():
     return {
         "inline_keyboard": [
@@ -59,6 +63,7 @@ def menu():
             [{"text": "🎲 بازی رندوم", "callback_data": "random"}]
         ]
     }
+
 
 def choices():
     return {
@@ -70,6 +75,8 @@ def choices():
     }
 
 # ================= GAME CORE =================
+
+
 def win(a, b):
     if a == b:
         return 0
@@ -123,6 +130,8 @@ def update(g):
     conn.commit()
 
 # ================= TIMER =================
+
+
 def start_timer(game_id):
     def run():
         time.sleep(ROUND_TIME)
@@ -132,9 +141,9 @@ def start_timer(game_id):
             return
 
         with game_lock:
-    g[role + "_move"] = action
-    send(chat_id, "✅ انتخاب شما ثبت شد")
-    update(g)
+            g[role + "_move"] = action
+            send(chat_id, "✅ انتخاب شما ثبت شد")
+            update(g)
 
             # اگر بازی تموم شده
             if g["finished"]:
@@ -161,6 +170,8 @@ def start_timer(game_id):
     threading.Thread(target=run, daemon=True).start()
 
 # ================= ROUND TEXT =================
+
+
 def round_text(n):
     return f"""
 🎮 راند {n}️⃣
@@ -173,6 +184,8 @@ def round_text(n):
 """
 
 # ================= NEXT ROUND =================
+
+
 def next_round(g):
     if g["finished"]:
         return
@@ -202,6 +215,8 @@ def next_round(g):
     start_timer(g["game_id"])
 
 # ================= END GAME =================
+
+
 def end_game(g):
     g["finished"] = 1
     update(g)
@@ -219,6 +234,8 @@ def end_game(g):
         send(g["p1"], f"😔 ای بابا\nباختی...\nجبران می‌کنی 💪\n\n{result}")
 
 # ================= MATCHMAKING (FIXED) =================
+
+
 def match_random(user_id):
     if queue and queue[0] != user_id:
         opponent = queue.popleft()
@@ -298,39 +315,39 @@ def webhook():
             return "ok"
 
         with game_lock:
-    g[role + "_move"] = action
-    send(chat_id, "✅ انتخاب شما ثبت شد")
+            g[role + "_move"] = action
+            send(chat_id, "✅ انتخاب شما ثبت شد")
 
-    update(g)
+            update(g)
 
-        # round complete
-        if g["p1_move"] and g["p2_move"]:
-    r = win(g["p1_move"], g["p2_move"])
+            # round complete
+            if g["p1_move"] and g["p2_move"]:
+                r = win(g["p1_move"], g["p2_move"])
 
-    if r == 1:
-        g["p1_score"] += 1
+                if r == 1:
+                    g["p1_score"] += 1
 
-        send(g["p1"],
-             f"🏆 شما یک امتیاز گرفتید\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
-        send(g["p2"],
-             f"😔 حریف شما یک امتیاز گرفت\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
+                    send(g["p1"],
+                         f"🏆 شما یک امتیاز گرفتید\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
+                    send(g["p2"],
+                         f"😔 حریف شما یک امتیاز گرفت\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
 
-    elif r == 2:
-        g["p2_score"] += 1
+                elif r == 2:
+                    g["p2_score"] += 1
 
-        send(g["p2"],
-             f"🏆 شما یک امتیاز گرفتید\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
-        send(g["p1"],
-             f"😔 حریف شما یک امتیاز گرفت\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
+                    send(g["p2"],
+                         f"🏆 شما یک امتیاز گرفتید\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
+                    send(g["p1"],
+                         f"😔 حریف شما یک امتیاز گرفت\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
 
-    else:
-        send(g["p1"], "🤝 این راند مساوی شد")
-        send(g["p2"], "🤝 این راند مساوی شد")
+                else:
+                    send(g["p1"], "🤝 این راند مساوی شد")
+                    send(g["p2"], "🤝 این راند مساوی شد")
 
-    update(g)
-    next_round(g)
+                update(g)
+                next_round(g)
 
-    return "ok"
+        return "ok"
 
 
 if __name__ == "__main__":
