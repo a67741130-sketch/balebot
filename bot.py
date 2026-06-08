@@ -11,7 +11,7 @@ TOKEN = "934745261:DtDGTB3MeeTg2V8-jfUbzr5O2KcQGQi6WXQ"
 BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 
 # ================= DB =================
-conn = sqlite3.connect("uber.db", check_same_thread=False)
+conn = sqlite3.connect("promax.db", check_same_thread=False)
 cur = conn.cursor()
 
 cur.execute("""
@@ -29,35 +29,26 @@ CREATE TABLE IF NOT EXISTS games (
 """)
 conn.commit()
 
-
-# ================= MATCHMAKING QUEUE =================
-queue = []  # users waiting for random match
+# ================= QUEUE =================
+queue = []
 
 
 # ================= SEND =================
 def send(chat_id, text, reply_markup=None):
-    data = {"chat_id": chat_id, "text": text}
+    payload = {"chat_id": chat_id, "text": text}
     if reply_markup:
-        data["reply_markup"] = json.dumps(reply_markup)
-    requests.post(BASE_URL + "/sendMessage", data=data)
+        payload["reply_markup"] = json.dumps(reply_markup)
+    requests.post(BASE_URL + "/sendMessage", data=payload)
 
 
 # ================= UI =================
 def main_menu():
     return {
         "inline_keyboard": [
-            [{"text": "🆔 بازی با کد", "callback_data": "code"}],
+            [{"text": "🆕 ساخت بازی", "callback_data": "create"}],
+            [{"text": "🔑 بازی با کد", "callback_data": "join"}],
             [{"text": "🎲 بازی رندوم", "callback_data": "random"}]
         ]
-    }
-
-
-def copy_code(code):
-    # واقعی‌ترین حالت: متن آماده کپی
-    return {
-        "inline_keyboard": [[
-            {"text": f"📋 کد: {code} (لمس برای کپی)", "callback_data": f"copy:{code}"}
-        ]]
     }
 
 
@@ -124,9 +115,9 @@ def update(g):
     conn.commit()
 
 
-# ================= MATCHMAKING =================
-def try_match(user):
-    if queue:
+# ================= MATCHMAKING FIXED =================
+def match_user(user):
+    if len(queue) > 0:
         opponent = queue.pop(0)
 
         game_id = str(uuid.uuid4())[:6]
@@ -139,8 +130,8 @@ def try_match(user):
         send(opponent, "🎮 حریف پیدا شد!")
         send(user, "🎮 حریف پیدا شد!")
 
-        send(opponent, "شروع بازی", choices())
-        send(user, "شروع بازی", choices())
+        send(opponent, "راند 1", choices())
+        send(user, "راند 1", choices())
 
     else:
         queue.append(user)
@@ -158,7 +149,7 @@ def webhook():
         text = (data["message"].get("text") or "").strip()
 
         if text == "/start":
-            send(chat_id, "🎮 Uber RPS", main_menu())
+            send(chat_id, "🎮 Pro Max VC++", main_menu())
 
     # ---------------- CALLBACK ----------------
     if "callback_query" in data:
@@ -166,25 +157,22 @@ def webhook():
         chat_id = cq["message"]["chat"]["id"]
         action = cq["data"]
 
-        # MENU
-        if action == "code":
+        # CREATE GAME
+        if action == "create":
             game_id = str(uuid.uuid4())[:6]
             create_game(game_id, chat_id, "code")
 
-            send(chat_id,
-                 f"🎯 کد بازی:\n{game_id}",
-                 copy_code(game_id)
-            )
+            send(chat_id, game_id)  # FIXED COPY (ONLY CODE)
             return "ok"
 
+        # RANDOM MODE FIXED
         if action == "random":
-            try_match(chat_id)
+            match_user(chat_id)
             return "ok"
 
-        # COPY (FIXED - REAL)
-        if action.startswith("copy:"):
-            code = action.split(":")[1]
-            send(chat_id, f"📋 کپی کن:\n{code}")
+        # JOIN MODE
+        if action == "join":
+            send(chat_id, "📩 کد بازی را ارسال کنید")
             return "ok"
 
         # GAME LOGIC
@@ -208,6 +196,10 @@ def webhook():
 
         update(g)
 
+        # FEEDBACK FIX
+        send(chat_id, "✅ انتخاب شما ثبت شد")
+
+        # ROUND PROCESS
         if g["p1_move"] and g["p2_move"]:
             r = win(g["p1_move"], g["p2_move"])
 
@@ -227,9 +219,8 @@ def webhook():
             g["p2_move"] = None
             g["round"] += 1
 
-            # 3 ROUND LIMIT
             if g["round"] > 3:
-                result = f"🎮 پایان\nشما: {g['p1_score']} | حریف: {g['p2_score']}"
+                result = f"🎮 پایان بازی\nشما: {g['p1_score']} | حریف: {g['p2_score']}"
                 send(g["p1"], result)
                 send(g["p2"], result)
                 return "ok"
