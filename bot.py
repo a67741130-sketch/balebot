@@ -1,9 +1,10 @@
 from flask import Flask, request
 import requests
+import sqlite3
 import uuid
 import json
 import os
-import sqlite3
+from collections import deque
 
 app = Flask(__name__)
 
@@ -11,7 +12,7 @@ TOKEN = "934745261:DtDGTB3MeeTg2V8-jfUbzr5O2KcQGQi6WXQ"
 BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 
 # ================= DB =================
-conn = sqlite3.connect("promax.db", check_same_thread=False)
+conn = sqlite3.connect("ultra.db", check_same_thread=False)
 cur = conn.cursor()
 
 cur.execute("""
@@ -27,30 +28,36 @@ CREATE TABLE IF NOT EXISTS games (
     mode TEXT
 )
 """)
+
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    wins INTEGER DEFAULT 0,
+    losses INTEGER DEFAULT 0
+)
+""")
+
 conn.commit()
 
 # ================= QUEUE =================
-queue = []
-
+queue = deque()
 
 # ================= SEND =================
 def send(chat_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "text": text}
+    data = {"chat_id": chat_id, "text": text}
     if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
-    requests.post(BASE_URL + "/sendMessage", data=payload)
-
+        data["reply_markup"] = json.dumps(reply_markup)
+    requests.post(BASE_URL + "/sendMessage", data=data)
 
 # ================= UI =================
-def main_menu():
+def menu():
     return {
         "inline_keyboard": [
             [{"text": "🆕 ساخت بازی", "callback_data": "create"}],
-            [{"text": "🔑 بازی با کد", "callback_data": "join"}],
+            [{"text": "🔑 ورود با کد", "callback_data": "join"}],
             [{"text": "🎲 بازی رندوم", "callback_data": "random"}]
         ]
     }
-
 
 def choices():
     return {
@@ -61,8 +68,7 @@ def choices():
         ]]
     }
 
-
-# ================= GAME =================
+# ================= GAME CORE =================
 def win(a, b):
     if a == b:
         return 0
@@ -73,15 +79,16 @@ def win(a, b):
     return 2
 
 
-def create_game(game_id, p1, mode):
-    cur.execute("""
-    INSERT INTO games VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (game_id, p1, None, 0, 0, 1, None, None, mode))
+def create_game(p1, mode):
+    gid = str(uuid.uuid4())[:6]
+    cur.execute("INSERT INTO games VALUES (?,?,?,?,?,?,?,?,?)",
+                (gid, p1, None, 0, 0, 1, None, None, mode))
     conn.commit()
+    return gid
 
 
-def get_game(game_id):
-    cur.execute("SELECT * FROM games WHERE game_id=?", (game_id,))
+def get_game(gid):
+    cur.execute("SELECT * FROM games WHERE game_id=?", (gid,))
     r = cur.fetchone()
     if not r:
         return None
@@ -103,38 +110,45 @@ def update(g):
     UPDATE games SET p2=?, p1_score=?, p2_score=?, round=?, p1_move=?, p2_move=?, mode=?
     WHERE game_id=?
     """, (
-        g["p2"],
-        g["p1_score"],
-        g["p2_score"],
-        g["round"],
-        g["p1_move"],
-        g["p2_move"],
-        g["mode"],
-        g["game_id"]
+        g["p2"], g["p1_score"], g["p2_score"],
+        g["round"], g["p1_move"], g["p2_move"], g["mode"], g["game_id"]
     ))
     conn.commit()
 
 
-# ================= MATCHMAKING FIXED =================
-def match_user(user):
-    if len(queue) > 0:
-        opponent = queue.pop(0)
+def update_user(uid, win_flag):
+    cur.execute("SELECT * FROM users WHERE user_id=?", (uid,))
+    u = cur.fetchone()
 
-        game_id = str(uuid.uuid4())[:6]
-        create_game(game_id, opponent, "random")
+    if not u:
+        cur.execute("INSERT INTO users VALUES (?,?,?)", (uid, 0, 0))
 
-        game = get_game(game_id)
-        game["p2"] = user
-        update(game)
+    if win_flag == 1:
+        cur.execute("UPDATE users SET wins = wins + 1 WHERE user_id=?", (uid,))
+    elif win_flag == 2:
+        cur.execute("UPDATE users SET losses = losses + 1 WHERE user_id=?", (uid,))
+
+    conn.commit()
+
+
+# ================= MATCHMAKING ULTRA =================
+def match(user):
+    if queue and queue[0] != user:
+        opponent = queue.popleft()
+
+        gid = create_game(opponent, "random")
+        g = get_game(gid)
+        g["p2"] = user
+        update(g)
 
         send(opponent, "🎮 حریف پیدا شد!")
         send(user, "🎮 حریف پیدا شد!")
 
         send(opponent, "راند 1", choices())
         send(user, "راند 1", choices())
-
     else:
-        queue.append(user)
+        if user not in queue:
+            queue.append(user)
         send(user, "⏳ در حال پیدا کردن حریف...")
 
 
@@ -143,39 +157,37 @@ def match_user(user):
 def webhook():
     data = request.get_json(force=True)
 
-    # ---------------- MESSAGE ----------------
+    # -------- MESSAGE --------
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
         text = (data["message"].get("text") or "").strip()
 
         if text == "/start":
-            send(chat_id, "🎮 Pro Max VC++", main_menu())
+            send(chat_id, "🚀 ULTRA VERSION ACTIVE", menu())
 
-    # ---------------- CALLBACK ----------------
+    # -------- CALLBACK --------
     if "callback_query" in data:
         cq = data["callback_query"]
         chat_id = cq["message"]["chat"]["id"]
         action = cq["data"]
 
-        # CREATE GAME
+        # CREATE
         if action == "create":
-            game_id = str(uuid.uuid4())[:6]
-            create_game(game_id, chat_id, "code")
-
-            send(chat_id, game_id)  # FIXED COPY (ONLY CODE)
+            gid = create_game(chat_id, "code")
+            send(chat_id, gid)
             return "ok"
 
-        # RANDOM MODE FIXED
-        if action == "random":
-            match_user(chat_id)
-            return "ok"
-
-        # JOIN MODE
+        # JOIN
         if action == "join":
-            send(chat_id, "📩 کد بازی را ارسال کنید")
+            send(chat_id, "📩 کد را ارسال کنید")
             return "ok"
 
-        # GAME LOGIC
+        # RANDOM
+        if action == "random":
+            match(chat_id)
+            return "ok"
+
+        # GET GAME
         cur.execute("SELECT game_id FROM games WHERE p1=? OR p2=?", (chat_id, chat_id))
         row = cur.fetchone()
         if not row:
@@ -183,34 +195,41 @@ def webhook():
 
         g = get_game(row[0])
 
-        player = "p1" if chat_id == g["p1"] else "p2"
+        role = "p1" if chat_id == g["p1"] else "p2"
 
-        if player == "p1":
-            if g["p1_move"]:
-                return "ok"
+        # ANTI DOUBLE MOVE
+        if role == "p1" and g["p1_move"]:
+            return "ok"
+        if role == "p2" and g["p2_move"]:
+            return "ok"
+
+        if role == "p1":
             g["p1_move"] = action
         else:
-            if g["p2_move"]:
-                return "ok"
             g["p2_move"] = action
 
         update(g)
 
-        # FEEDBACK FIX
         send(chat_id, "✅ انتخاب شما ثبت شد")
 
-        # ROUND PROCESS
+        # ROUND END
         if g["p1_move"] and g["p2_move"]:
             r = win(g["p1_move"], g["p2_move"])
 
             if r == 1:
                 g["p1_score"] += 1
                 send(g["p1"], "🏆 شما یک امتیاز گرفتید")
-                send(g["p2"], "😢 حریف شما یک امتیاز گرفت")
+                send(g["p2"], "📉 حریف شما یک امتیاز گرفت")
+                update_user(g["p1"], 1)
+                update_user(g["p2"], 2)
+
             elif r == 2:
                 g["p2_score"] += 1
                 send(g["p2"], "🏆 شما یک امتیاز گرفتید")
-                send(g["p1"], "😢 حریف شما یک امتیاز گرفت")
+                send(g["p1"], "📉 حریف شما یک امتیاز گرفت")
+                update_user(g["p2"], 1)
+                update_user(g["p1"], 2)
+
             else:
                 send(g["p1"], "🤝 مساوی")
                 send(g["p2"], "🤝 مساوی")
@@ -220,9 +239,9 @@ def webhook():
             g["round"] += 1
 
             if g["round"] > 3:
-                result = f"🎮 پایان بازی\nشما: {g['p1_score']} | حریف: {g['p2_score']}"
-                send(g["p1"], result)
-                send(g["p2"], result)
+                final = f"🏁 پایان بازی\n{g['p1_score']} - {g['p2_score']}"
+                send(g["p1"], final)
+                send(g["p2"], final)
                 return "ok"
 
             update(g)
