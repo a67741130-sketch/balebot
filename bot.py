@@ -132,6 +132,9 @@ def start_timer(game_id):
             return
 
         with game_lock:
+    g[role + "_move"] = action
+    send(chat_id, "✅ انتخاب شما ثبت شد")
+    update(g)
 
             # اگر بازی تموم شده
             if g["finished"]:
