@@ -53,12 +53,22 @@ def winner(m1, m2):
 # ---------------- WEBHOOK ----------------
 @app.route("/", methods=["POST"])
 def webhook():
-    print("🔥 HIT RECEIVED")
-    print("HEADERS:", dict(request.headers))
-    print("DATA:", request.data)
+    data = request.get_json(force=True)
+
+    print("UPDATE:", data)
 
     if not data:
         return "ok"
+
+    if "message" in data:
+        msg = data["message"]
+        text = msg.get("text", "")
+        chat_id = msg["chat"]["id"]
+
+        if text == "/start":
+            send(chat_id, "🎮 ربات فعال شد!")
+
+    return "ok"
 
     # ---------------- MESSAGE ----------------
     if "message" in data:
