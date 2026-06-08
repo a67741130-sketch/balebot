@@ -1,18 +1,22 @@
-from flask import Flask, request
-import requests
-import sqlite3
+import os
+import time
 import uuid
 import json
-import os
-from collections import deque
+import sqlite3
+import threading
+import requests
+from flask import Flask, request
 
 app = Flask(__name__)
 
+# ================= CONFIG =================
 TOKEN = "934745261:DtDGTB3MeeTg2V8-jfUbzr5O2KcQGQi6WXQ"
 BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 
+ROUND_TIME = 300  # 5 minutes
+
 # ================= DB =================
-conn = sqlite3.connect("ultra.db", check_same_thread=False)
+conn = sqlite3.connect("game.db", check_same_thread=False)
 cur = conn.cursor()
 
 cur.execute("""
@@ -25,22 +29,15 @@ CREATE TABLE IF NOT EXISTS games (
     round INTEGER,
     p1_move TEXT,
     p2_move TEXT,
-    mode TEXT
-)
-""")
-
-cur.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    wins INTEGER DEFAULT 0,
-    losses INTEGER DEFAULT 0
+    mode TEXT,
+    finished INTEGER DEFAULT 0
 )
 """)
 
 conn.commit()
 
-# ================= QUEUE =================
-queue = deque()
+# ================= MEMORY =================
+timers = {}
 
 # ================= SEND =================
 def send(chat_id, text, reply_markup=None):
@@ -50,7 +47,7 @@ def send(chat_id, text, reply_markup=None):
     requests.post(BASE_URL + "/sendMessage", data=data)
 
 # ================= UI =================
-def menu():
+def main_menu():
     return {
         "inline_keyboard": [
             [{"text": "🆕 ساخت بازی", "callback_data": "create"}],
@@ -81,7 +78,7 @@ def win(a, b):
 
 def create_game(p1, mode):
     gid = str(uuid.uuid4())[:6]
-    cur.execute("INSERT INTO games VALUES (?,?,?,?,?,?,?,?,?)",
+    cur.execute("INSERT INTO games VALUES (?,?,?,?,?,?,?,?,?,0)",
                 (gid, p1, None, 0, 0, 1, None, None, mode))
     conn.commit()
     return gid
@@ -89,83 +86,132 @@ def create_game(p1, mode):
 
 def get_game(gid):
     cur.execute("SELECT * FROM games WHERE game_id=?", (gid,))
-    r = cur.fetchone()
-    if not r:
+    g = cur.fetchone()
+    if not g:
         return None
+
     return {
-        "game_id": r[0],
-        "p1": r[1],
-        "p2": r[2],
-        "p1_score": r[3],
-        "p2_score": r[4],
-        "round": r[5],
-        "p1_move": r[6],
-        "p2_move": r[7],
-        "mode": r[8]
+        "game_id": g[0],
+        "p1": g[1],
+        "p2": g[2],
+        "p1_score": g[3],
+        "p2_score": g[4],
+        "round": g[5],
+        "p1_move": g[6],
+        "p2_move": g[7],
+        "mode": g[8],
+        "finished": g[9]
     }
 
 
 def update(g):
     cur.execute("""
-    UPDATE games SET p2=?, p1_score=?, p2_score=?, round=?, p1_move=?, p2_move=?, mode=?
+    UPDATE games SET p2=?, p1_score=?, p2_score=?, round=?, p1_move=?, p2_move=?, finished=?
     WHERE game_id=?
     """, (
         g["p2"], g["p1_score"], g["p2_score"],
-        g["round"], g["p1_move"], g["p2_move"], g["mode"], g["game_id"]
+        g["round"], g["p1_move"], g["p2_move"], g["finished"], g["game_id"]
     ))
     conn.commit()
 
+# ================= TIMER =================
+def start_timer(game_id):
+    def run():
+        time.sleep(ROUND_TIME)
 
-def update_user(uid, win_flag):
-    cur.execute("SELECT * FROM users WHERE user_id=?", (uid,))
-    u = cur.fetchone()
+        g = get_game(game_id)
+        if not g or g["finished"]:
+            return
 
-    if not u:
-        cur.execute("INSERT INTO users VALUES (?,?,?)", (uid, 0, 0))
+        if g["p1_move"] is None or g["p2_move"] is None:
 
-    if win_flag == 1:
-        cur.execute("UPDATE users SET wins = wins + 1 WHERE user_id=?", (uid,))
-    elif win_flag == 2:
-        cur.execute("UPDATE users SET losses = losses + 1 WHERE user_id=?", (uid,))
+            if g["p1_move"] is None:
+                g["p2_score"] += 1
+                send(g["p2"], "⏱ حریف انتخاب نکرد → امتیاز برای شما ثبت شد")
+                send(g["p1"], "⏱ زمان تمام شد → امتیاز برای حریف")
 
-    conn.commit()
+            if g["p2_move"] is None:
+                g["p1_score"] += 1
+                send(g["p1"], "⏱ حریف انتخاب نکرد → امتیاز برای شما ثبت شد")
+                send(g["p2"], "⏱ زمان تمام شد → امتیاز برای حریف")
+
+            next_round(g)
+
+    t = threading.Thread(target=run)
+    t.start()
+    timers[game_id] = t
 
 
-# ================= MATCHMAKING ULTRA =================
-def match(user):
-    if queue and queue[0] != user:
-        opponent = queue.popleft()
+# ================= ROUND CONTROL =================
+def next_round(g):
+    if g["finished"]:
+        return
 
-        gid = create_game(opponent, "random")
-        g = get_game(gid)
-        g["p2"] = user
-        update(g)
+    # reset moves
+    g["p1_move"] = None
+    g["p2_move"] = None
+    g["round"] += 1
 
-        send(opponent, "🎮 حریف پیدا شد!")
-        send(user, "🎮 حریف پیدا شد!")
+    # tie break
+    if g["round"] == 4:
+        send(g["p1"], "🔥 راند نهایی شروع شد")
+        send(g["p2"], "🔥 راند نهایی شروع شد")
 
-        send(opponent, "راند 1", choices())
-        send(user, "راند 1", choices())
+    # finish
+    if g["round"] > 4:
+        end_game(g)
+        return
+
+    update(g)
+
+    send(g["p1"], round_text(g["round"]), choices())
+    send(g["p2"], round_text(g["round"]), choices())
+
+    start_timer(g["game_id"])
+
+
+def round_text(n):
+    return f"""
+راند {n}️⃣
+
+🎮 از بین سه گزینه زیر انتخاب خود را انجام دهید
+
+⚠️ توجه:
+⏱ زمان انتخاب ۵ دقیقه است
+❗ در صورت عدم انتخاب، امتیاز برای حریف ثبت می‌شود
+"""
+
+# ================= END GAME =================
+def end_game(g):
+    g["finished"] = 1
+    update(g)
+
+    p1 = g["p1_score"]
+    p2 = g["p2_score"]
+
+    result = f"📊 نتیجه: {p1} - {p2}"
+
+    if p1 > p2:
+        send(g["p1"], f"🎉 تبریک!\nشما برنده شدید 🏆\n\n{result}")
+        send(g["p2"], f"😔 ای بابا\nباختی...\nبعدی جبران کن 💪\n\n{result}")
     else:
-        if user not in queue:
-            queue.append(user)
-        send(user, "⏳ در حال پیدا کردن حریف...")
-
+        send(g["p2"], f"🎉 تبریک!\nشما برنده شدید 🏆\n\n{result}")
+        send(g["p1"], f"😔 ای بابا\nباختی...\nبعدی جبران کن 💪\n\n{result}")
 
 # ================= WEBHOOK =================
 @app.route("/", methods=["POST"])
 def webhook():
-    data = request.get_json(force=True)
+    data = request.get_json()
 
-    # -------- MESSAGE --------
+    # ========== MESSAGE ==========
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
-        text = (data["message"].get("text") or "").strip()
+        text = data["message"].get("text", "")
 
         if text == "/start":
-            send(chat_id, "🚀 ULTRA VERSION ACTIVE", menu())
+            send(chat_id, "🎮 ULTRA++ READY", main_menu())
 
-    # -------- CALLBACK --------
+    # ========== CALLBACK ==========
     if "callback_query" in data:
         cq = data["callback_query"]
         chat_id = cq["message"]["chat"]["id"]
@@ -174,22 +220,17 @@ def webhook():
         # CREATE
         if action == "create":
             gid = create_game(chat_id, "code")
-            send(chat_id, gid)
-            return "ok"
-
-        # JOIN
-        if action == "join":
-            send(chat_id, "📩 کد را ارسال کنید")
+            send(chat_id, f"کد بازی: {gid}")
             return "ok"
 
         # RANDOM
         if action == "random":
-            match(chat_id)
-            return "ok"
+            send(chat_id, "⏳ در حال پیدا کردن حریف...")
 
-        # GET GAME
+        # GAME ACTION
         cur.execute("SELECT game_id FROM games WHERE p1=? OR p2=?", (chat_id, chat_id))
         row = cur.fetchone()
+
         if not row:
             return "ok"
 
@@ -197,57 +238,26 @@ def webhook():
 
         role = "p1" if chat_id == g["p1"] else "p2"
 
-        # ANTI DOUBLE MOVE
         if role == "p1" and g["p1_move"]:
             return "ok"
         if role == "p2" and g["p2_move"]:
             return "ok"
 
-        if role == "p1":
-            g["p1_move"] = action
-        else:
-            g["p2_move"] = action
+        g[role + "_move"] = action
+        send(chat_id, "✅ انتخاب ثبت شد")
 
         update(g)
 
-        send(chat_id, "✅ انتخاب شما ثبت شد")
-
-        # ROUND END
         if g["p1_move"] and g["p2_move"]:
             r = win(g["p1_move"], g["p2_move"])
 
             if r == 1:
                 g["p1_score"] += 1
-                send(g["p1"], "🏆 شما یک امتیاز گرفتید")
-                send(g["p2"], "📉 حریف شما یک امتیاز گرفت")
-                update_user(g["p1"], 1)
-                update_user(g["p2"], 2)
-
             elif r == 2:
                 g["p2_score"] += 1
-                send(g["p2"], "🏆 شما یک امتیاز گرفتید")
-                send(g["p1"], "📉 حریف شما یک امتیاز گرفت")
-                update_user(g["p2"], 1)
-                update_user(g["p1"], 2)
-
-            else:
-                send(g["p1"], "🤝 مساوی")
-                send(g["p2"], "🤝 مساوی")
-
-            g["p1_move"] = None
-            g["p2_move"] = None
-            g["round"] += 1
-
-            if g["round"] > 3:
-                final = f"🏁 پایان بازی\n{g['p1_score']} - {g['p2_score']}"
-                send(g["p1"], final)
-                send(g["p2"], final)
-                return "ok"
 
             update(g)
-
-            send(g["p1"], f"راند {g['round']}", choices())
-            send(g["p2"], f"راند {g['round']}", choices())
+            next_round(g)
 
     return "ok"
 
