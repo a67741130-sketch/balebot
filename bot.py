@@ -12,13 +12,13 @@ BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 games = {}
 user_game = {}
 
+
 # ---------------- SEND ----------------
 def send(chat_id, text, reply_markup=None):
     payload = {
         "chat_id": chat_id,
         "text": text
     }
-
     if reply_markup:
         payload["reply_markup"] = json.dumps(reply_markup)
 
@@ -36,20 +36,33 @@ def choice_buttons():
     }
 
 
+# ---------------- COPY BUTTON (GAME CODE) ----------------
+def copy_button(code):
+    return {
+        "inline_keyboard": [[
+            {"text": f"📋 کپی کد بازی: {code}", "callback_data": f"copy_{code}"}
+        ]]
+    }
+
+
+# ---------------- USER LABEL ----------------
+def user_label(game, player_key):
+    pid = game[player_key]
+    return str(pid)
+
+
 # ---------------- WIN LOGIC ----------------
-def round_winner(p1_move, p2_move):
-    if p1_move == p2_move:
+def round_winner(m1, m2):
+    if m1 == m2:
         return 0
-
-    if (p1_move == "rock" and p2_move == "scissors") or \
-       (p1_move == "paper" and p2_move == "rock") or \
-       (p1_move == "scissors" and p2_move == "paper"):
+    if (m1 == "rock" and m2 == "scissors") or \
+       (m1 == "paper" and m2 == "rock") or \
+       (m1 == "scissors" and m2 == "paper"):
         return 1
-
     return 2
 
 
-# ---------------- GAME INIT ----------------
+# ---------------- INIT GAME ----------------
 def init_game(p1):
     return {
         "p1": p1,
@@ -66,7 +79,6 @@ def init_game(p1):
 def webhook():
 
     data = request.get_json(force=True)
-
     print("UPDATE:", data)
 
     # ---------------- MESSAGE ----------------
@@ -77,7 +89,7 @@ def webhook():
 
         # START
         if text.startswith("/start"):
-            send(chat_id, "🎮 آماده‌ای؟\n/create برای شروع بازی")
+            send(chat_id, "🎮 آماده‌ای؟\n/create برای ساخت بازی")
 
         # CREATE
         elif text.startswith("/create"):
@@ -85,12 +97,14 @@ def webhook():
             games[game_id] = init_game(chat_id)
             user_game[chat_id] = game_id
 
-            send(chat_id, f"🎯 بازی ساخته شد\nکد: {game_id}\nمنتظر حریف...")
+            send(chat_id,
+                 f"🎯 بازی ساخته شد\nکد: {game_id}",
+                 copy_button(game_id)
+            )
 
         # JOIN
         elif text.startswith("/join"):
             parts = text.split()
-
             if len(parts) < 2:
                 send(chat_id, "❌ /join GAME_ID")
                 return "ok"
@@ -109,15 +123,19 @@ def webhook():
 
             send(game["p1"], "🎮 حریف وصل شد!")
             send(game["p2"], "🎮 شروع بازی!")
+
             send(game["p1"], f"راند {game['round']}", choice_buttons())
             send(game["p2"], f"راند {game['round']}", choice_buttons())
 
     # ---------------- CALLBACK ----------------
     if "callback_query" in data:
         cq = data["callback_query"]
-
         chat_id = cq["message"]["chat"]["id"]
         move = cq["data"]
+
+        # COPY BUTTON
+        if move.startswith("copy_"):
+            return "ok"
 
         if chat_id not in user_game:
             send(chat_id, "❌ وارد بازی نیستی")
@@ -131,7 +149,7 @@ def webhook():
 
         # جلوگیری از دوبار انتخاب
         if chat_id in game["moves"]:
-            send(chat_id, "⚠️ تو این راند انتخاب کردی")
+            send(chat_id, "⚠️ قبلاً انتخاب کردی")
             return "ok"
 
         if chat_id == game["p1"]:
@@ -141,37 +159,37 @@ def webhook():
 
         send(chat_id, f"ثبت شد: {move}")
 
-        # اگر هر دو انتخاب کردند
+        # اگر هر دو حرکت کردند
         if "p1" in game["moves"] and "p2" in game["moves"]:
 
-            result = round_winner(game["moves"]["p1"], game["moves"]["p2"])
+            r = round_winner(game["moves"]["p1"], game["moves"]["p2"])
 
-            if result == 1:
+            p1 = user_label(game, "p1")
+            p2 = user_label(game, "p2")
+
+            if r == 1:
                 game["score"]["p1"] += 1
-                msg = "🏆 بازیکن 1 برد این راند"
-            elif result == 2:
+                msg = f"🏆 برنده این راند: {p1}"
+            elif r == 2:
                 game["score"]["p2"] += 1
-                msg = "🏆 بازیکن 2 برد این راند"
+                msg = f"🏆 برنده این راند: {p2}"
             else:
                 msg = "🤝 مساوی"
 
             send(game["p1"], msg)
             send(game["p2"], msg)
 
-            # پاک کردن حرکت‌ها
             game["moves"] = {}
-
             game["round"] += 1
 
             # پایان بازی
             if game["round"] > game["max_rounds"]:
 
-                if game["score"]["p1"] > game["score"]["p2"]:
-                    final = "🎉 Player 1 برنده کل بازی شد"
-                elif game["score"]["p2"] > game["score"]["p1"]:
-                    final = "🎉 Player 2 برنده کل بازی شد"
-                else:
-                    final = "🤝 بازی مساوی شد"
+                final = (
+                    f"🎮 پایان بازی\n\n"
+                    f"{p1}: {game['score']['p1']}\n"
+                    f"{p2}: {game['score']['p2']}"
+                )
 
                 send(game["p1"], final)
                 send(game["p2"], final)
