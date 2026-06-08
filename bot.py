@@ -10,6 +10,9 @@ from collections import deque
 
 app = Flask(__name__)
 
+
+game_lock = threading.Lock()
+
 # ================= CONFIG =================
 TOKEN = "934745261:DtDGTB3MeeTg2V8-jfUbzr5O2KcQGQi6WXQ"
 BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
@@ -128,19 +131,29 @@ def start_timer(game_id):
         if not g or g["finished"]:
             return
 
-        if g["p1_move"] is None or g["p2_move"] is None:
+        with game_lock:
 
-            if g["p1_move"] is None:
-                g["p2_score"] += 1
-                send(g["p2"], "⏱ حریف انتخاب نکرد → شما امتیاز گرفتید")
-                send(g["p1"], "⏱ زمان تمام شد → امتیاز برای حریف")
+            # اگر بازی تموم شده
+            if g["finished"]:
+                return
 
-            if g["p2_move"] is None:
-                g["p1_score"] += 1
-                send(g["p1"], "⏱ حریف انتخاب نکرد → شما امتیاز گرفتید")
-                send(g["p2"], "⏱ زمان تمام شد → امتیاز برای حریف")
+            # اگر هنوز کسی انتخاب نکرده یا یکی انتخاب نکرده
+            if g["p1_move"] is None or g["p2_move"] is None:
 
-            next_round(g)
+                if g["p1_move"] is None:
+                    g["p2_score"] += 1
+                    send(g["p2"], "⏱ حریف انتخاب نکرد → شما امتیاز گرفتید")
+                    send(g["p1"], "⏱ زمان تمام شد → امتیاز برای حریف")
+
+                if g["p2_move"] is None:
+                    g["p1_score"] += 1
+                    send(g["p1"], "⏱ حریف انتخاب نکرد → شما امتیاز گرفتید")
+                    send(g["p2"], "⏱ زمان تمام شد → امتیاز برای حریف")
+
+                update(g)
+
+                # ادامه بازی
+                next_round(g)
 
     threading.Thread(target=run, daemon=True).start()
 
@@ -161,24 +174,28 @@ def next_round(g):
     if g["finished"]:
         return
 
+    # reset moves
     g["p1_move"] = None
     g["p2_move"] = None
     g["round"] += 1
 
-    # tie-break
+    # 🔥 راند نهایی
     if g["round"] == 4:
         send(g["p1"], "🔥 راند نهایی شروع شد!")
         send(g["p2"], "🔥 راند نهایی شروع شد!")
 
+    # پایان بازی
     if g["round"] > 4:
         end_game(g)
         return
 
     update(g)
 
+    # ارسال پیام راند جدید
     send(g["p1"], round_text(g["round"]), choices())
     send(g["p2"], round_text(g["round"]), choices())
 
+    # تایمر راند جدید
     start_timer(g["game_id"])
 
 # ================= END GAME =================
@@ -277,22 +294,38 @@ def webhook():
         if role == "p2" and g["p2_move"]:
             return "ok"
 
-        g[role + "_move"] = action
-        send(chat_id, "✅ انتخاب شما ثبت شد")
+        with game_lock:
+    g[role + "_move"] = action
+    send(chat_id, "✅ انتخاب شما ثبت شد")
 
-        update(g)
+    update(g)
 
         # round complete
         if g["p1_move"] and g["p2_move"]:
-            r = win(g["p1_move"], g["p2_move"])
+    r = win(g["p1_move"], g["p2_move"])
 
-            if r == 1:
-                g["p1_score"] += 1
-            elif r == 2:
-                g["p2_score"] += 1
+    if r == 1:
+        g["p1_score"] += 1
 
-            update(g)
-            next_round(g)
+        send(g["p1"],
+             f"🏆 شما یک امتیاز گرفتید\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
+        send(g["p2"],
+             f"😔 حریف شما یک امتیاز گرفت\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
+
+    elif r == 2:
+        g["p2_score"] += 1
+
+        send(g["p2"],
+             f"🏆 شما یک امتیاز گرفتید\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
+        send(g["p1"],
+             f"😔 حریف شما یک امتیاز گرفت\n\n📊 نتیجه: {g['p1_score']} - {g['p2_score']}")
+
+    else:
+        send(g["p1"], "🤝 این راند مساوی شد")
+        send(g["p2"], "🤝 این راند مساوی شد")
+
+    update(g)
+    next_round(g)
 
     return "ok"
 
