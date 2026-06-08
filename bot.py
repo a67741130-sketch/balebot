@@ -285,7 +285,7 @@ def webhook():
         text = data["message"].get("text", "")
 
         if text == "/start":
-            send(chat_id, "🚀 ULTRA MATCH v2 ACTIVE", menu())
+            send(chat_id, "سلام👋\nبه بازی سنگ کاغذ قیچی خوش اومدی🎮\nبرای شروع مود بازیتو انتخاب کن👇", menu())
 
     # ===== CALLBACK =====
     if "callback_query" in data:
