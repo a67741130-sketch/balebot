@@ -81,7 +81,7 @@ def webhook():
             send(chat_id, "🎮 خوش اومدی!\n/create برای ساخت بازی")
 
         # CREATE GAME
-        elif text == "/create":
+        elif text.startswith("/create"):
             game_id = str(uuid.uuid4())[:6]
 
             games[game_id] = {
