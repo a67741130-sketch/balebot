@@ -184,34 +184,46 @@ def round_text(n):
 """
 
 # ================= NEXT ROUND =================
-
-
 def next_round(g):
     if g["finished"]:
         return
 
-    # reset moves
     g["p1_move"] = None
     g["p2_move"] = None
     g["round"] += 1
 
-    # 🔥 راند نهایی
-    if g["round"] == 4:
-        send(g["p1"], "🔥 راند نهایی شروع شد!")
-        send(g["p2"], "🔥 راند نهایی شروع شد!")
+    update(g)
 
-    # پایان بازی
-    if g["round"] > 4:
+    # 🔥 اگر هنوز ۳ راند تموم نشده، ادامه بده
+    if g["round"] <= 3:
+        send(g["p1"], round_text(g["round"]), choices())
+        send(g["p2"], round_text(g["round"]), choices())
+        start_timer(g["game_id"])
+        return
+
+    # ================= AFTER 3 ROUNDS =================
+    p1 = g["p1_score"]
+    p2 = g["p2_score"]
+
+    # ❌ اگر مساوی نبود → تموم
+    if p1 != p2:
         end_game(g)
         return
 
+    # 🔥 اگر مساوی بود → راند نهایی
+    send(g["p1"], "🔥 نتیجه مساوی است! راند نهایی شروع شد")
+    send(g["p2"], "🔥 نتیجه مساوی است! راند نهایی شروع شد")
+
+    # reset برای راند نهایی
+    g["p1_move"] = None
+    g["p2_move"] = None
+    g["round"] += 1
+
     update(g)
 
-    # ارسال پیام راند جدید
     send(g["p1"], round_text(g["round"]), choices())
     send(g["p2"], round_text(g["round"]), choices())
 
-    # تایمر راند جدید
     start_timer(g["game_id"])
 
 # ================= END GAME =================
