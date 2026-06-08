@@ -10,8 +10,8 @@ app = Flask(__name__)
 TOKEN = "934745261:DtDGTB3MeeTg2V8-jfUbzr5O2KcQGQi6WXQ"
 BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 
-# ---------------- DB ----------------
-conn = sqlite3.connect("game.db", check_same_thread=False)
+# ================= DATABASE =================
+conn = sqlite3.connect("games.db", check_same_thread=False)
 cur = conn.cursor()
 
 cur.execute("""
@@ -21,22 +21,34 @@ CREATE TABLE IF NOT EXISTS games (
     p2 INTEGER,
     p1_score INTEGER,
     p2_score INTEGER,
-    round INTEGER
+    round INTEGER,
+    p1_move TEXT,
+    p2_move TEXT
 )
 """)
 conn.commit()
 
 
-# ---------------- SEND ----------------
+# ================= SEND =================
 def send(chat_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "text": text}
+    data = {"chat_id": chat_id, "text": text}
     if reply_markup:
-        payload["reply_markup"] = json.dumps(reply_markup)
+        data["reply_markup"] = json.dumps(reply_markup)
 
-    requests.post(BASE_URL + "/sendMessage", data=payload)
+    requests.post(BASE_URL + "/sendMessage", data=data)
 
 
-# ---------------- COPY BUTTON FIXED ----------------
+# ================= BUTTONS =================
+def choice_buttons():
+    return {
+        "inline_keyboard": [[
+            {"text": "✊ سنگ", "callback_data": "rock"},
+            {"text": "✋ کاغذ", "callback_data": "paper"},
+            {"text": "✌️ قیچی", "callback_data": "scissors"}
+        ]]
+    }
+
+
 def copy_button(code):
     return {
         "inline_keyboard": [[
@@ -48,8 +60,8 @@ def copy_button(code):
     }
 
 
-# ---------------- GAME LOGIC ----------------
-def win(m1, m2):
+# ================= GAME LOGIC =================
+def winner(m1, m2):
     if m1 == m2:
         return 0
     if (m1 == "rock" and m2 == "scissors") or \
@@ -59,30 +71,14 @@ def win(m1, m2):
     return 2
 
 
-# ---------------- CREATE GAME ----------------
+# ================= HELPERS =================
 def create_game(game_id, p1):
     cur.execute("""
-    INSERT INTO games VALUES (?, ?, ?, ?, ?, ?)
-    """, (game_id, p1, None, 0, 0, 1))
+    INSERT INTO games VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (game_id, p1, None, 0, 0, 1, None, None))
     conn.commit()
 
 
-# ---------------- UPDATE GAME ----------------
-def update_game(game):
-    cur.execute("""
-    UPDATE games SET p2=?, p1_score=?, p2_score=?, round=?
-    WHERE game_id=?
-    """, (
-        game["p2"],
-        game["p1_score"],
-        game["p2_score"],
-        game["round"],
-        game["game_id"]
-    ))
-    conn.commit()
-
-
-# ---------------- GET GAME ----------------
 def get_game(game_id):
     cur.execute("SELECT * FROM games WHERE game_id=?", (game_id,))
     row = cur.fetchone()
@@ -96,13 +92,31 @@ def get_game(game_id):
         "p1_score": row[3],
         "p2_score": row[4],
         "round": row[5],
+        "p1_move": row[6],
+        "p2_move": row[7],
     }
 
 
-# ---------------- WEBHOOK ----------------
+def update_game(g):
+    cur.execute("""
+    UPDATE games
+    SET p2=?, p1_score=?, p2_score=?, round=?, p1_move=?, p2_move=?
+    WHERE game_id=?
+    """, (
+        g["p2"],
+        g["p1_score"],
+        g["p2_score"],
+        g["round"],
+        g["p1_move"],
+        g["p2_move"],
+        g["game_id"]
+    ))
+    conn.commit()
+
+
+# ================= WEBHOOK =================
 @app.route("/", methods=["POST"])
 def webhook():
-
     data = request.get_json(force=True)
 
     # ---------------- MESSAGE ----------------
@@ -113,7 +127,7 @@ def webhook():
 
         # START
         if text.startswith("/start"):
-            send(chat_id, "🎮 آماده‌ای؟ /create")
+            send(chat_id, "🎮 آماده‌ای؟\n/create برای ساخت بازی")
 
         # CREATE
         elif text.startswith("/create"):
@@ -121,7 +135,7 @@ def webhook():
             create_game(game_id, chat_id)
 
             send(chat_id,
-                 f"🎯 کد بازی شما:\n{game_id}",
+                 f"🎯 کد بازی:\n{game_id}",
                  copy_button(game_id)
             )
 
@@ -140,19 +154,84 @@ def webhook():
                 return "ok"
 
             if game["p2"]:
-                send(chat_id, "❌ بازی پر شده")
+                send(chat_id, "❌ بازی پر است")
                 return "ok"
 
             game["p2"] = chat_id
             update_game(game)
 
             send(game["p1"], "🎮 حریف وصل شد!")
-            send(game["p2"], "🎮 شروع بازی!")
+            send(game["p2"], "🎮 بازی شروع شد!")
+
+            send(game["p1"], "نوبت شما", choice_buttons())
+            send(game["p2"], "نوبت شما", choice_buttons())
+
+    # ---------------- CALLBACK ----------------
+    if "callback_query" in data:
+        cq = data["callback_query"]
+        chat_id = cq["message"]["chat"]["id"]
+        move = cq["data"]
+
+        # پیدا کردن بازی
+        cur.execute("SELECT game_id FROM games WHERE p1=? OR p2=?", (chat_id, chat_id))
+        row = cur.fetchone()
+
+        if not row:
+            return "ok"
+
+        game = get_game(row[0])
+
+        if not game:
+            return "ok"
+
+        # تعیین بازیکن
+        if chat_id == game["p1"]:
+            if game["p1_move"]:
+                send(chat_id, "⚠️ قبلاً انتخاب کردی")
+                return "ok"
+            game["p1_move"] = move
+        else:
+            if game["p2_move"]:
+                send(chat_id, "⚠️ قبلاً انتخاب کردی")
+                return "ok"
+            game["p2_move"] = move
+
+        update_game(game)
+
+        # وقتی هر دو انتخاب کردند
+        if game["p1_move"] and game["p2_move"]:
+
+            r = winner(game["p1_move"], game["p2_move"])
+
+            if r == 1:
+                game["p1_score"] += 1
+                send(game["p1"], "شما یک امتیاز گرفتید")
+                send(game["p2"], "حریف شما یک امتیاز گرفت")
+
+            elif r == 2:
+                game["p2_score"] += 1
+                send(game["p2"], "شما یک امتیاز گرفتید")
+                send(game["p1"], "حریف شما یک امتیاز گرفت")
+
+            else:
+                send(game["p1"], "🤝 مساوی")
+                send(game["p2"], "🤝 مساوی")
+
+            # reset moves
+            game["p1_move"] = None
+            game["p2_move"] = None
+            game["round"] += 1
+
+            update_game(game)
+
+            # ادامه بازی
+            send(game["p1"], "راند بعد", choice_buttons())
+            send(game["p2"], "راند بعد", choice_buttons())
 
     return "ok"
 
 
-# ---------------- RUN ----------------
+# ================= RUN =================
 if __name__ == "__main__":
     app.run(
         host="0.0.0.0",
