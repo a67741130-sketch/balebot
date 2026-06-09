@@ -1,5 +1,4 @@
 import os
-import time
 import uuid
 import json
 import sqlite3
@@ -10,12 +9,13 @@ from flask import Flask, request
 from collections import deque
 
 app = Flask(__name__)
+
 lock = threading.Lock()
 
 TOKEN = "934745261:DtDGTB3MeeTg2V8-jfUbzr5O2KcQGQi6WXQ"
 BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
-ROUND_TIME = 300
 
+# ================= DB =================
 conn = sqlite3.connect("game.db", check_same_thread=False)
 cur = conn.cursor()
 
@@ -37,30 +37,26 @@ conn.commit()
 
 queue = deque()
 
-# ================= SEND =================
+# ================= SAFE SEND =================
 def send(chat_id, text, reply_markup=None):
     try:
-        data = {"chat_id": chat_id, "text": text}
+        payload = {"chat_id": chat_id, "text": text}
         if reply_markup:
-            data["reply_markup"] = json.dumps(reply_markup)
-        requests.post(BASE_URL + "/sendMessage", data=data, 
-timeout=5)
+            payload["reply_markup"] = json.dumps(reply_markup)
+
+        requests.post(BASE_URL + "/sendMessage", data=payload, timeout=5)
     except:
         pass
 
 
-# ================= UI (بدون تغییر متن) =================
+# ================= UI (UNCHANGED TEXT) =================
 def menu():
     return {
         "inline_keyboard": [
-            [{"text": "🆕 ساخت بازی", "callback_data": 
-"create"}],
-            [{"text": "🔑 ورود با کد", "callback_data": 
-"join"}],
-            [{"text": "🎲 بازی رندوم", "callback_data": 
-"random"}],
-            [{"text": "🤖 بازی با ربات", "callback_data": 
-"bot"}]
+            [{"text": "🆕 ساخت بازی", "callback_data": "create"}],
+            [{"text": "🔑 ورود با کد", "callback_data": "join"}],
+            [{"text": "🎲 بازی رندوم", "callback_data": "random"}],
+            [{"text": "🤖 بازی با ربات", "callback_data": "bot"}]
         ]
     }
 
@@ -75,7 +71,19 @@ def choices():
     }
 
 
-# ================= GAME =================
+def round_text(n):
+    return f"""
+🎮 راند {n}️⃣
+
+از بین گزینه‌های زیر انتخاب کنید:
+
+⚠️ توجه:
+⏱ زمان انتخاب: ۵ دقیقه
+❗ در صورت عدم انتخاب، امتیاز برای حریف ثبت می‌شود
+"""
+
+
+# ================= GAME CORE =================
 def win(a, b):
     if a == b:
         return 0
@@ -88,19 +96,19 @@ def win(a, b):
 
 def create_game(p1, mode):
     gid = str(uuid.uuid4())[:6]
-    cur.execute("INSERT INTO games VALUES 
-(?,?,?,?,?,?,?,?,?,0)",
-                (gid, p1, None, 0, 0, 1, None, None, mode))
+    cur.execute("""
+    INSERT INTO games VALUES (?,?,?,?,?,?,?,?,?,0)
+    """, (gid, p1, None, 0, 0, 1, None, None, mode))
     conn.commit()
     return gid
 
 
-def get_game_by_user(user):
-    cur.execute("SELECT * FROM games WHERE p1=? OR p2=?", 
-(user, user))
+def get_game(user):
+    cur.execute("SELECT * FROM games WHERE p1=? OR p2=?", (user, user))
     g = cur.fetchone()
     if not g:
         return None
+
     return {
         "game_id": g[0],
         "p1": g[1],
@@ -127,19 +135,31 @@ def update(g):
     conn.commit()
 
 
-# ================= GAME FLOW =================
-def round_text(n):
-    return f"""
-🎮 راند {n}️⃣
+# ================= NEXT ROUND (SAFE) =================
+def next_round(g):
+    if g["finished"]:
+        return
 
-از بین گزینه‌های زیر انتخاب کنید:
+    g["p1_move"] = None
+    g["p2_move"] = None
+    g["round"] += 1
 
-⚠️ توجه:
-⏱ زمان انتخاب: ۵ دقیقه
-❗ در صورت عدم انتخاب، امتیاز برای حریف ثبت می‌شود
-"""
+    update(g)
+
+    if g["round"] <= 3 or (g["round"] == 4 and g["p1_score"] == g["p2_score"]):
+        send(g["p1"], round_text(g["round"]), choices())
+
+        if g["p2"] == "BOT":
+            g["p2_move"] = random.choice(["rock", "paper", "scissors"])
+            process(g)
+        else:
+            send(g["p2"], round_text(g["round"]), choices())
+        return
+
+    end_game(g)
 
 
+# ================= PROCESS =================
 def process(g):
     r = win(g["p1_move"], g["p2_move"])
 
@@ -155,25 +175,11 @@ def process(g):
         send(g["p1"], "🤝 مساوی")
         send(g["p2"], "🤝 مساوی")
 
+    update(g)
     next_round(g)
 
 
-def next_round(g):
-    g["p1_move"] = None
-    g["p2_move"] = None
-    g["round"] += 1
-
-    update(g)
-
-    if g["round"] <= 3 or (g["p1_score"] == g["p2_score"] and 
-g["round"] <= 4):
-        send(g["p1"], round_text(g["round"]), choices())
-        send(g["p2"], round_text(g["round"]), choices())
-        return
-
-    end_game(g)
-
-
+# ================= END GAME =================
 def end_game(g):
     g["finished"] = 1
     update(g)
@@ -181,23 +187,17 @@ def end_game(g):
     result = f"📊 نتیجه: {g['p1_score']} - {g['p2_score']}"
 
     if g["p1_score"] > g["p2_score"]:
-        send(g["p1"], f"🎉 تبریک\nشما برنده شدید 
-🏆\n{result}")
+        send(g["p1"], f"🎉 تبریک\nشما برنده شدید 🏆\n{result}")
         send(g["p2"], f"😔 ای بابا\nباختی\n{result}")
     else:
-        send(g["p2"], f"🎉 تبریک\nشما برنده شدید 
-🏆\n{result}")
+        send(g["p2"], f"🎉 تبریک\nشما برنده شدید 🏆\n{result}")
         send(g["p1"], f"😔 ای بابا\nباختی\n{result}")
 
 
 # ================= BOT =================
-def bot_move():
-    return random.choice(["rock", "paper", "scissors"])
-
-
 def start_bot(user):
     gid = create_game(user, "bot")
-    g = get_game_by_user(user)
+    g = get_game(user)
     g["p2"] = "BOT"
     update(g)
 
@@ -205,15 +205,13 @@ def start_bot(user):
     send(user, round_text(1), choices())
 
 
-# ================= MATCH RANDOM =================
-queue = deque()
-
+# ================= RANDOM =================
 def match_random(user):
     if queue and queue[0] != user:
         opp = queue.popleft()
 
         gid = create_game(opp, "random")
-        g = get_game_by_user(opp)
+        g = get_game(opp)
         g["p2"] = user
         update(g)
 
@@ -231,15 +229,16 @@ def match_random(user):
 # ================= WEBHOOK =================
 @app.route("/", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
 
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
         text = data["message"].get("text", "")
 
         if text == "/start":
-            send(chat_id, "سلام👋\nبه بازی سنگ کاغذ قیچی خوش 
-اومدی🎮", menu())
+            send(chat_id,
+                 "سلام👋\nبه بازی سنگ کاغذ قیچی خوش اومدی🎮\nبرای شروع مود بازیتو انتخاب کن👇",
+                 menu())
 
     if "callback_query" in data:
         cq = data["callback_query"]
@@ -263,7 +262,7 @@ def webhook():
             send(chat_id, "کد رو بفرست")
             return "ok"
 
-        g = get_game_by_user(chat_id)
+        g = get_game(chat_id)
         if not g:
             return "ok"
 
@@ -275,9 +274,6 @@ def webhook():
 
             update(g)
 
-            if g["p2"] == "BOT" and role == "p1":
-                g["p2_move"] = bot_move()
-
             if g["p1_move"] and g["p2_move"]:
                 process(g)
 
@@ -285,5 +281,4 @@ def webhook():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 
-5000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
