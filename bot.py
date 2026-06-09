@@ -239,74 +239,104 @@ def match_random(user_id):
 # ================= WEBHOOK =================
 @app.route("/", methods=["POST"])
 def webhook():
-    data = request.get_json()
+    try:
+        data = request.get_json(silent=True)
 
-    if "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "")
-
-        if text == "/start":
-            send(chat_id,
-                 "سلام 👋\nبه بازی سنگ کاغذ قیچی خوش اومدی 🎮\nمود بازی رو انتخاب کن 👇",
-                 menu())
-
-    if "callback_query" in data:
-        cq = data["callback_query"]
-        chat_id = cq["message"]["chat"]["id"]
-        action = cq["data"]
-
-        if action == "create":
-            code = create_game(chat_id, "code")
-            send(chat_id, f"🔑 کد بازی: {code}", share_keyboard(code))
+        if not data:
             return "ok"
 
-        if action == "join":
-            send(chat_id, "📩 کد بازی رو ارسال کن")
+        # ================= MESSAGE =================
+        msg = data.get("message")
+        if msg:
+            chat_id = msg["chat"]["id"]
+            text = msg.get("text", "")
+
+            if text == "/start":
+                send(
+                    chat_id,
+                    "سلام 👋\nبه بازی سنگ کاغذ قیچی خوش اومدی 🎮\nمود بازی رو انتخاب کن 👇",
+                    menu()
+                )
+
             return "ok"
 
-        if action == "random":
-            match_random(chat_id)
-            return "ok"
+        # ================= CALLBACK =================
+        cq = data.get("callback_query")
+        if cq:
+            chat_id = cq["message"]["chat"]["id"]
+            action = cq.get("data")
 
-        cur.execute("SELECT game_id FROM games WHERE p1=? OR p2=?", (chat_id, chat_id))
-        row = cur.fetchone()
-        if not row:
-            return "ok"
+            # ===== CREATE =====
+            if action == "create":
+                gid = create_game(chat_id, "code")
+                send(chat_id, f"🔑 کد بازی شما:\n{gid}")
+                return "ok"
 
-        g = get_game(row[0])
-        role = "p1" if chat_id == g["p1"] else "p2"
+            # ===== JOIN =====
+            if action == "join":
+                send(chat_id, "📩 کد بازی را ارسال کنید")
+                return "ok"
 
-        if role == "p1" and g["p1_move"]:
-            return "ok"
-        if role == "p2" and g["p2_move"]:
-            return "ok"
+            # ===== RANDOM =====
+            if action == "random":
+                match_random(chat_id)
+                return "ok"
 
-        with game_lock:
-            g[role + "_move"] = action
-            send(chat_id, "✅ انتخاب شما ثبت شد")
+            # ===== FIND GAME =====
+            cur.execute(
+                "SELECT game_id FROM games WHERE p1=? OR p2=?",
+                (chat_id, chat_id)
+            )
+            row = cur.fetchone()
 
-            update(g)
+            if not row:
+                return "ok"
 
-            if g["p1_move"] and g["p2_move"]:
-                r = win(g["p1_move"], g["p2_move"])
+            g = get_game(row[0])
+            if not g:
+                return "ok"
 
-                if r == 1:
-                    g["p1_score"] += 1
-                    send(g["p1"], "🏆 شما یک امتیاز گرفتید")
-                    send(g["p2"], "😔 حریف یک امتیاز گرفت")
+            role = "p1" if chat_id == g["p1"] else "p2"
 
-                elif r == 2:
-                    g["p2_score"] += 1
-                    send(g["p2"], "🏆 شما یک امتیاز گرفتید")
-                    send(g["p1"], "😔 حریف یک امتیاز گرفت")
+            # anti double click
+            if role == "p1" and g["p1_move"]:
+                return "ok"
+            if role == "p2" and g["p2_move"]:
+                return "ok"
 
-                else:
-                    send(g["p1"], "🤝 مساوی")
-                    send(g["p2"], "🤝 مساوی")
+            with game_lock:
+                g[role + "_move"] = action
+                send(chat_id, "✅ انتخاب شما ثبت شد")
 
                 update(g)
-                next_round(g)
 
+                # ===== ROUND COMPLETE =====
+                if g["p1_move"] and g["p2_move"]:
+                    r = win(g["p1_move"], g["p2_move"])
+
+                    if r == 1:
+                        g["p1_score"] += 1
+                        send(g["p1"], "🏆 شما یک امتیاز گرفتید")
+                        send(g["p2"], "😔 حریف یک امتیاز گرفت")
+
+                    elif r == 2:
+                        g["p2_score"] += 1
+                        send(g["p2"], "🏆 شما یک امتیاز گرفتید")
+                        send(g["p1"], "😔 حریف یک امتیاز گرفت")
+
+                    else:
+                        send(g["p1"], "🤝 این راند مساوی شد")
+                        send(g["p2"], "🤝 این راند مساوی شد")
+
+                    update(g)
+                    next_round(g)
+
+            return "ok"
+
+        return "ok"
+
+    except Exception as e:
+        print("WEBHOOK CRASH FIXED:", e)
         return "ok"
 
 
