@@ -38,11 +38,12 @@ conn.commit()
 queue = deque()
 active_games = {}
 
+# ✅ FIX 1: اضافه شد
 waiting_join = {}
+
 bot_players = set()
 
 
-# ================= SEND =================
 def send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text}
     if reply_markup:
@@ -50,19 +51,6 @@ def send(chat_id, text, reply_markup=None):
     requests.post(BASE_URL + "/sendMessage", data=data)
 
 
-# ================= SHARE (NEW - ONLY ADDITION) =================
-def share_game_button(gid):
-    return {
-        "inline_keyboard": [[
-            {
-                "text": "📤 اشتراک‌گذاری کد",
-                "url": f"https://t.me/share/url?url=🎮%20کد%20بازی:%20{gid}"
-            }
-        ]]
-    }
-
-
-# ================= UI =================
 def menu():
     return {
         "inline_keyboard": [
@@ -84,7 +72,6 @@ def choices():
     }
 
 
-# ================= CORE =================
 def win(a, b):
     if a == b:
         return 0
@@ -138,22 +125,44 @@ def update(g):
     conn.commit()
 
 
-# ================= BOT =================
+# ================= JOIN FIX =================
+def join_game(user_id, code):
+    g = get_game(code)
+
+    if not g:
+        send(user_id, "❌ چنین کدی وجود ندارد")
+        return
+
+    if g["p2"] is not None:
+        send(user_id, "❌ این بازی قبلاً پر شده")
+        return
+
+    g["p2"] = user_id
+    update(g)
+
+    send(g["p1"], "🎮 بازیکن وارد بازی شد!")
+    send(user_id, "🎮 به بازی وصل شدی!")
+
+    send(g["p1"], round_text(1), choices())
+    send(user_id, round_text(1), choices())
+
+    start_timer(g["game_id"])
+
+
 def bot_move():
     import random
     return random.choice(["rock", "paper", "scissors"])
 
 
-# ================= TIMER =================
 def start_timer(game_id):
     def run():
         time.sleep(ROUND_TIME)
 
-        with game_lock:
-            g = get_game(game_id)
-            if not g or g["finished"]:
-                return
+        g = get_game(game_id)
+        if not g or g["finished"]:
+            return
 
+        with game_lock:
             if g["p1_move"] is None:
                 g["p1_move"] = "rock"
             if g["p2"] and g["p2_move"] is None:
@@ -165,11 +174,7 @@ def start_timer(game_id):
     threading.Thread(target=run, daemon=True).start()
 
 
-# ================= PROCESS ROUND =================
 def process_round(g):
-    if g["p1_move"] is None or (g["p2"] and g["p2_move"] is None):
-        return
-
     r = win(g["p1_move"], g["p2_move"])
 
     if r == 1:
@@ -191,7 +196,6 @@ def process_round(g):
     next_round(g)
 
 
-# ================= ROUND TEXT =================
 def round_text(n):
     return f"""
 🎮 راند {n}️⃣
@@ -204,7 +208,6 @@ def round_text(n):
 """
 
 
-# ================= NEXT ROUND =================
 def next_round(g):
     if g["finished"]:
         return
@@ -215,7 +218,7 @@ def next_round(g):
 
     update(g)
 
-    if g["round"] > 4:
+    if g["round"] > 3:
         end_game(g)
         return
 
@@ -226,7 +229,6 @@ def next_round(g):
     start_timer(g["game_id"])
 
 
-# ================= END GAME =================
 def end_game(g):
     g["finished"] = 1
     update(g)
@@ -245,7 +247,6 @@ def end_game(g):
         send(g["p1"], f"😔 ای بابا\nباختی...\nجبران می‌کنی 💪\n\n{result}")
 
 
-# ================= MATCHMAKING =================
 def match_random(user_id):
     if queue and queue[0] != user_id:
         opponent = queue.popleft()
@@ -269,7 +270,6 @@ def match_random(user_id):
         send(user_id, "⏳ در حال پیدا کردن حریف...")
 
 
-# ================= BOT GAME =================
 def play_bot(user_id):
     gid = create_game(user_id, "bot")
     g = get_game(gid)
@@ -282,7 +282,6 @@ def play_bot(user_id):
     start_timer(gid)
 
 
-# ================= WEBHOOK =================
 @app.route("/", methods=["POST"])
 def webhook():
     data = request.get_json()
@@ -290,6 +289,13 @@ def webhook():
     if "message" in data:
         chat_id = data["message"]["chat"]["id"]
         text = data["message"].get("text", "")
+
+        # 🔴 FIX JOIN FLOW
+        if chat_id in waiting_join:
+            code = text.strip()
+            del waiting_join[chat_id]
+            join_game(chat_id, code)
+            return "ok"
 
         if text == "/start":
             send(chat_id, "سلام👋\nبه بازی سنگ کاغذ قیچی خوش اومدی🎮\nبرای شروع مود بازیتو انتخاب کن👇", menu())
@@ -299,17 +305,17 @@ def webhook():
         chat_id = cq["message"]["chat"]["id"]
         action = cq["data"]
 
+        if action == "join":
+            waiting_join[chat_id] = True
+            send(chat_id, "📩 کد بازی را ارسال کنید")
+            return "ok"
+
         if action == "bot":
             play_bot(chat_id)
             return "ok"
 
         if action == "random":
             match_random(chat_id)
-            return "ok"
-
-        if action == "create":
-            gid = create_game(chat_id, "code")
-            send(chat_id, f"🔑 کد بازی شما:\n{gid}", share_game_button(gid))
             return "ok"
 
         cur.execute("SELECT game_id FROM games WHERE p1=? OR p2=?", (chat_id, chat_id))
